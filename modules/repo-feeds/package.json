@@ -1,0 +1,7 @@
+{
+  "name": "@aihot/repo-feeds",
+  "private": true,
+  "type": "module",
+  "exports": { "./server": "./server.ts" },
+  "dependencies": { "@aihot/backend": "*" }
+}

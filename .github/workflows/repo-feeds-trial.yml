@@ -1,0 +1,71 @@
+name: Repository feeds trial
+
+on:
+  pull_request:
+    paths:
+      - 'modules/repo-feeds/**'
+      - 'site/modules/server.ts'
+      - '.github/workflows/repo-feeds-trial.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: repo_feeds_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U postgres' --health-interval 2s
+          --health-timeout 5s --health-retries 30
+    env:
+      DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/repo_feeds_ci
+      COLLECT_ENABLED: 'false'
+      MODEL_CALLS_ENABLED: 'false'
+      FEISHU_CONTENT_PUSH_ENABLED: 'false'
+      FEISHU_INTERNAL_ENABLED: 'false'
+      INDEXNOW_SUBMIT_ENABLED: 'false'
+      REPO_FEEDS_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci --no-audit --no-fund
+      - name: Migrate and test database import
+        run: |
+          node scripts/migrate.ts
+          node --test modules/repo-feeds/tests/*.test.ts
+      - name: Download the three fixed public daily exports
+        run: |
+          mkdir -p .data/trial-input
+          curl --fail --location --retry 2 'https://raw.githubusercontent.com/wodewoping-png/news-spider/62fcb32d5c6af6116d44d72f9a19f75075ad21f1/data/articles-2026-10-12.csv' -o .data/trial-input/news.csv
+          curl --fail --location --retry 2 'https://raw.githubusercontent.com/wodewoping-png/wechat-daily-news-csv/557357f7e7a95e61373df6c1e0342db3d952bd45/csv/2026-10-11.csv' -o .data/trial-input/wechat.csv
+          curl --fail --location --retry 2 'https://raw.githubusercontent.com/wodewoping-png/literature-rss-spider/b1f3777884dd63b03b428ba3b29f3a52dc7de57c/output/news_with_abstract_2026-10-12.csv' -o .data/trial-input/literature.csv
+      - name: Import real data twice without models or publication
+        run: |
+          node modules/repo-feeds/scripts/trial.ts --apply --file news=.data/trial-input/news.csv --file wechat=.data/trial-input/wechat.csv --file literature=.data/trial-input/literature.csv --out .data/first
+          node modules/repo-feeds/scripts/trial.ts --apply --file news=.data/trial-input/news.csv --file wechat=.data/trial-input/wechat.csv --file literature=.data/trial-input/literature.csv --out .data/second
+          node --input-type=module - <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const first = JSON.parse(readFileSync('.data/first/report.json'));
+          const second = JSON.parse(readFileSync('.data/second/report.json'));
+          assert.ok(first.imported.created > 0);
+          assert.equal(second.imported.created, 0);
+          assert.equal(second.imported.revised, 0);
+          assert.equal(second.imported.unchanged, second.rows);
+          const lines = ['## Three-repository import trial', '', 'No model calls or public publication.', '', '| Feed | Rows | Sources | Full (upstream flag) | Abstract | Unverified | Empty |', '|---|---:|---:|---:|---:|---:|---:|'];
+          for (const s of first.summary) lines.push(`| ${s.feed} | ${s.rows} | ${s.sources} | ${s.full} | ${s.abstract} | ${s.unverified} | ${s.empty} |`);
+          lines.push('', `First import: ${first.imported.created} created. Repeat: ${second.imported.created} created, ${second.imported.revised} revised.`, '');
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n'));
+          console.log(JSON.stringify({ first: first.imported, second: second.imported }));
+          JS
