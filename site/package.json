@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "sideEffects": false,
+  "dependencies": { "@aihot/repo-feeds": "*" },
   "exports": {
     ".": "./site.ts",
     "./models": "./models.ts",
